@@ -8,7 +8,9 @@
 var httpClient;
 var wallet;
 var global_abi;
-var worker;
+var stopImport = false;
+var progressText;
+var progressFill;
 
 var txData = [
          {
@@ -63,7 +65,6 @@ var txData = [
     
 
 $(document).ready(function(){
-  wallet = new Wallet();
   var networkId = $("#networkid").val();
   httpClient = new HttpClient(networkId);
   if( networkId === "testnet" ){
@@ -94,7 +95,7 @@ $('#networkid').on('change', function(){
   updateTxData('sender', '');
   updateTxData('nonce', '');
   httpClient.setUrl(networkId.val());
-  wallet.clearPrivateKey();
+  wallet = null;
 });
 
 function getGasPrice() 
@@ -521,7 +522,11 @@ function buildInputRow( inputTable, inputData, inputIndex, isConstant )
   var onchangeAttr='';
   if( fieldId === "sender" ) {
      if( !isConstant ) {
-       fieldValue = wallet.getAddressFromPrivateKey();
+       if( wallet ) {
+         fieldValue = wallet.getAddress();
+       } else {
+         fieldValue = '';
+       }
        readOnlyAttr = 'readOnly'; 
      }
   }
@@ -689,8 +694,15 @@ function showProgress() {
 }
 
 function updateProgress( pct ) {
-  $('.pctText').text(parseInt(pct));
-  $('.fill').css('width', pct + '%');
+  var percentage = pct * 100;
+  if( !progressText ) {
+    progressText = $('.pctText');
+  }
+  if( !progressFill ) {
+    progressFill = $('.fill');   
+  }
+  progressText.text(parseInt(percentage));
+  progressFill.css('width', percentage + '%');
 }
 
 /**
@@ -714,16 +726,35 @@ $('#importWallet').click( function() {
 
     console.log("loaded JSON wallet file");
   
-    if( !worker ) {
-      setupWorker();
-    }
-
     showProgress();
-    worker.postMessage({
-      action: 'import',
-      json: json,
-      password: password,
+    stopImport = false;
+    console.time('importFromJson');
+    Wallet.importFromJson(json, password, function(error, progress, jsonWallet){
+      if (error) {
+        $('.alert').show().text(error);
+        showWalletModal();
+        console.log('error importing wallet');
+      }
+      else if (jsonWallet) {
+        wallet = jsonWallet;
+        console.timeEnd('importFromJson');
+        console.log('completed wallet import');
+        updateProgress(progress);
+        var address = wallet.getAddress();
+
+        updateTxData('sender', address);
+        $("#sender").val(address);
+        senderHasChanged();
+        setTimeout(function() {
+          closeModal();
+        }, 500 );
+      }
+      else if (progress) {
+        //updateProgress(progress);
+        return stopImport;
+      }
     });
+    
   }
   reader.onerror = function (evt) {
     $('.alert').show().text("Error reading file.");
@@ -737,45 +768,6 @@ $('#importWallet').click( function() {
   }
 });
 
-function setupWorker() {
-
-  worker = new Worker('js/wallet-worker.js');
-  worker.addEventListener('message', function (event) {
-    var data = event.data;
-
-    if (data.action === 'progress') {
-      updateProgress(data.percent);
-
-    } else if (data.action === 'error') {
-      $('.alert').show().text(data.error);
-      showWalletModal();
-      console.log('error importing wallet');
-    } else if (data.action === 'imported') {
-      if (data.privateKey === null) {
-        $('.alert').show().text('Incorrect password');
-        showWalletModal();
-        console.log('incorrect password');
-      } else {
-        console.log('completed wallet import');
-        updateProgress('100');
-        var address = wallet.importFromKey(data.privateKey);
-
-        updateTxData('sender', address);
-        $("#sender").val(address);
-        senderHasChanged();
-        setTimeout(function() {
-          closeModal();
-        }, 500 );
-      }
-    }
-  });
-
-  worker.addEventListener('error', function (event) {
-    console.log('error event triggered: ', event);
-    $('.alert').text('error: ' + event.message).show();
-    showWalletModal();
-  });
-}
 
 /**
  * filter the navigation function list as user types in the filter input box
@@ -866,3 +858,10 @@ function buildAddMoreTag(inputTable) {
   }
 }
 
+$('#cancelImport').on('click', function(){
+  if( !stopImport ) {
+    console.log( 'cancelling wallet import..' );
+    stopImport = true; 
+    showWalletModal(); // close the progress modal
+  }
+});
